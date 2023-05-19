@@ -51,14 +51,17 @@ get:
 merge: get
 	$(TIME) python ${CLI_WRAPPER} -m
 
-schema: merge
-	$(TIME) python ${CLI_WRAPPER} -s
+# schema: merge
+# 	$(TIME) python ${CLI_WRAPPER} -s
 
-tables: schema
-	$(TIME) python ${CLI_WRAPPER} -b
+# tables: schema
+# 	$(TIME) python ${CLI_WRAPPER} -b
 
-install: tables
-	$(TIME) python ${CLI_WRAPPER} -i
+# install: tables
+# 	$(TIME) python ${CLI_WRAPPER} -i
+
+cypher_load: merge
+	$(TIME) python ${CLI_WRAPPER} -cl
 
 validate:
 	$(TIME) python ${CLI_WRAPPER} -a

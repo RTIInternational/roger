@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#set -x
+set -e
+
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+export ROGER_HOME=$( dirname $DIR )
+export DATA_HOME=$ROGER_HOME/roger/data
+export PYTHONPATH=$ROGER_HOME/dags
+
+venv_create_roger () {
+    python3 -m venv ~/.environments/roger
+
+    source ~/.environments/roger/bin/activate
+
+    pip install -r $ROGER_HOME/requirements.txt
+
+    export PYTHONPATH=$ROGER_HOME/dags
+}
+
+venv_activate_roger () {
+    echo '$PYTHONPATH is' $PYTHONPATH
+
+    source ~/.environments/roger/bin/activate
+
+    export PYTHONPATH=$ROGER_HOME/dags
+
+    echo '$PYTHONPATH is' $PYTHONPATH
+}
+
+venv_deactivate_roger () {
+
+    deactivate
+
+    echo 'VENV ROGER is deactivated'
+}
+
+$*
+
+exit 0
+
+

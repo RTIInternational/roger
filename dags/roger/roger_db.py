@@ -1,14 +1,58 @@
 import copy
 
 import redis
-# from redisgraph import Node, Edge, Graph
-# https://redis-py.readthedocs.io/en/v4.5.1/redismodules.html#redisgraph-commands
-from redis.commands.graph.node import Node
-from redis.commands.graph.edge import Edge
-
+from redis.commands.graph import Node, Edge, Graph
 from roger.roger_util import get_logger
 
 logger = get_logger ()
+
+"""Encode Python JSON-able objects as Cypher expressions."""
+
+
+def encode_dict(obj):
+    """Encode dictionary."""
+    return "{" + ", ".join(
+        f'`{key}`' + ": " + dumps(value)
+        for key, value in obj.items()
+    ) + "}"
+
+
+def encode_list(obj):
+    """Encode list."""
+    return "[" + ", ".join(
+        dumps(el) for el in obj
+    ) + "]"
+
+
+def encode_str(obj):
+    """Encode string."""
+    return f"\"{obj}\""
+
+
+def encode_none(obj):
+    """Encode None."""
+    return "null"
+
+
+def encode_bool(obj):
+    """Encode boolean."""
+    return "true" if obj else "false"
+
+
+def dumps(obj):
+    """Convert Python obj to Cypher expression."""
+    if isinstance(obj, dict):
+        return encode_dict(obj)
+    elif isinstance(obj, list):
+        return encode_list(obj)
+    elif isinstance(obj, str):
+        return encode_str(obj)
+    elif isinstance(obj, bool):
+        return encode_bool(obj)
+    elif obj is None:
+        return encode_none(obj)
+    else:
+        return str(obj)
 
 class RedisGraph:
     """ Graph abstraction over RedisGraph. A thin wrapper but provides us some options. """
@@ -16,14 +60,15 @@ class RedisGraph:
     def __init__(self, host='localhost', port=6379, graph='default', password=''):
         """ Construct a connection to Redis Graph. """
         self.r = redis.Redis(host=host, port=port, password=password)
-        self.redis_graph = self.r.graph(graph)
+        self.redis_graph = Graph(client=self.r,name=graph)
+        self.edge_queries = []
 
     def add_node (self, identifier=None, label=None, properties=None):
         """ Add a node with the given label and properties. """
-        logger.debug (f"--adding node id:{identifier} label:{label} prop:{properties}")
+        # logger.debug (f"--adding node id:{identifier} label:{label} prop:{properties}")
         if identifier and properties:
             properties['id'] = identifier
-        node = Node(node_id=identifier, alias=identifier, label=label, properties=properties)
+        node = Node(node_id=identifier, label=label, properties=properties)
         self.redis_graph.add_node(node)
         return node
 
@@ -38,15 +83,21 @@ class RedisGraph:
     
     def add_edge (self, start, predicate, end, properties={}):
         """ Add an edge with the given predicate and properties between start and end nodes. """
-        logger.debug (f"--adding edge start:{start} pred:{predicate} end:{end} prop:{properties}")
-        if isinstance(start, str) and isinstance(end, str):
-            start = Node(node_id = start, label='thing')
-            end = Node(node_id = end, label='thing')
-            self.redis_graph.add_node (start)
-            self.redis_graph.add_node (end)
-        edge = Edge(start, predicate, end, properties)
-        self.redis_graph.add_edge (edge)
-        return edge
+        # logger.debug (f"--adding edge start:{start} pred:{predicate} end:{end} prop:{properties}")
+        query = f"MATCH (a{{id: '{start}'}}), (b{{id: '{end}'}}) " \
+                f"CREATE (a)-[e:{predicate}]->(b) SET e = {dumps(properties)}"
+
+        self.edge_queries.append(query)
+
+        return query
+
+    # def add_edge_query(self, edges):
+        # query = f"""
+        # UNWIND {dumps(edges)} as e MATCH (a:`biolink:NamedThing`{{id: e.subject }}), (b:`biolink:NamedThing`{{id: e.object }}) CREATE (a)-[edge:e.predicate]->(b) SET edge = e
+        # """
+        # print(query)
+        # self.query(query)
+
 
     def has_node (self, identifier):
         return identifier in self.redis_graph.nodes
@@ -61,31 +112,18 @@ class RedisGraph:
     def query (self, query):
         """ Query and return result set. """
         result = self.redis_graph.query(query)
-        print(result)
+        # result.pretty_print()
         return result
     
     def delete (self):
         """ Delete the named graph. """
         self.redis_graph.delete()
-        
-def test ():
-    rg = RedisGraph ()
-    p = { 'a' : 4,
-          'b' : 'c',
-          'x' : 0 }
-    last = None
-    for x in range(0, 10000):
-        p['x'] = x + 1
-        node = rg.add_node (
-            label='yeah',
-            properties=copy.deepcopy (p))
-        if last is not None:
-            rg.add_edge (node, 'link', last)
-        last = node
-    rg.commit ()    
-    rg.query ("""MATCH (obj:yeah)-[:link]->(j:yeah) RETURN obj.a, obj.b, obj.x""")    
-    rg.query ("""MATCH (a) RETURN a""")
-    rg.delete ()
 
-#    rg.query ("""MATCH (a { id : 'chemical_substance' }) RETURN a""")
-#test ()
+    def flush(self):
+        logger.debug (f"--STARTING FLUSH")
+        self.redis_graph.flush()
+        logger.debug (f"--FINISH FLUSH")
+        for q in self.edge_queries:
+            self.query(q)
+        self.edge_queries = []
+        logger.debug (f"--FINISH EDGE QUERIES")

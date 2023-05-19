@@ -20,10 +20,11 @@ if __name__ == "__main__":
     """ Roger CLI. """
     parser.add_argument('-v', '--dataset-version', help="Dataset version.", default="v1.0")
     parser.add_argument('-g', '--get-kgx', help="Get KGX objects", action='store_true')
-    parser.add_argument('-s', '--create-schema', help="Infer schema", action='store_true')
+    # parser.add_argument('-s', '--create-schema', help="Infer schema", action='store_true')
     parser.add_argument('-m', '--merge-kgx', help="Merge KGX nodes", action='store_true')
-    parser.add_argument('-b', '--create-bulk', help="Create bulk load", action='store_true')
-    parser.add_argument('-i', '--insert', help="Do the bulk insert", action='store_true')
+    # parser.add_argument('-b', '--create-bulk', help="Create bulk load", action='store_true')
+    # parser.add_argument('-i', '--insert', help="Do the bulk insert", action='store_true')
+    parser.add_argument('-cl', '--cypher-load', help="Do the cypher insert commands", action='store_true')
     parser.add_argument('-a', '--validate', help="Validate the insert", action='store_true')
 
     """ Dug Annotation CLI. """
@@ -74,17 +75,19 @@ if __name__ == "__main__":
     if args.make_tagged_kg:
         DugUtil.make_kg_tagged(config=config)
 
-    # Roger things
+ # Roger things
     if args.get_kgx:
         RogerUtil.get_kgx(config=config)
     if args.merge_kgx:
         RogerUtil.merge_nodes(config=config)
-    if args.create_schema:
-        RogerUtil.create_schema(config=config)
-    if args.create_bulk:
-        RogerUtil.create_bulk_load(config=config)
-    if args.insert:
-        RogerUtil.bulk_load(config=config)
+    if args.cypher_load:
+        RogerUtil.cypher_load(config=config)
+    # if args.create_schema:
+    #     RogerUtil.create_schema(config=config)
+    # if args.create_bulk:
+    #     RogerUtil.create_bulk_load(config=config)
+    # if args.insert:
+    #     RogerUtil.bulk_load(config=config)
     if args.validate:
         RogerUtil.validate(config=config)
         RogerUtil.check_tranql(config=config)

@@ -356,6 +356,61 @@ class Util:
         files = Util.get_files_recursive(
             lambda file_name: not file_name.startswith('GapExchange_') and file_name.endswith('.xml'), file_path)
         return sorted([str(f) for f in files])
+    
+    """Encode Python JSON-able objects as Cypher expressions."""
+
+    @staticmethod
+    def encode_dict( obj):
+        """Encode dictionary."""
+        return "{" + ", ".join(
+            key + ": " + Util.dumps(value)
+            for key, value in obj.items()
+        ) + "}"
+
+    @staticmethod
+    def encode_list(obj):
+        """Encode list."""
+        return "[" + ", ".join(
+            Util.dumps(el) for el in obj
+        ) + "]"
+
+    @staticmethod
+    def encode_str(obj):
+        """
+        Encode string. 
+        If string has double quotes use single quote wrappers.
+        """
+        if obj.find("\"") > -1:
+            return f"\'{obj}\'"
+        else:
+            return f'\"{obj}\"'
+
+
+    @staticmethod
+    def encode_none(obj):
+        """Encode None."""
+        return "null"
+
+    @staticmethod
+    def encode_bool(obj):
+        """Encode boolean."""
+        return "true" if obj else "false"
+
+    @staticmethod
+    def dumps(obj):
+        """Convert Python obj to Cypher expression."""
+        if isinstance(obj, dict):
+            return Util.encode_dict(obj)
+        elif isinstance(obj, list):
+            return Util.encode_list(obj)
+        elif isinstance(obj, str):
+            return Util.encode_str(obj)
+        elif isinstance(obj, bool):
+            return Util.encode_bool(obj)
+        elif obj is None:
+            return Util.encode_none(obj)
+        else:
+            return str(obj)
 
 
     @staticmethod
@@ -1001,6 +1056,142 @@ class KGXModel:
         if self.enable_metrics:
             path = Util.metrics_path('merge_metrics.yaml')
             Util.write_object(metrics, path)
+    
+    def cypher_load(self):
+        """
+        This function is used to load the biolink model without the use of redis bulk loader in order to preserve the 'biolink:NAME' schema.
+        """
+        log.info(f"Starting cypher load")
+        redisgraph = {
+            'host': os.getenv('REDIS_HOST'),
+            'port': os.getenv('REDIS_PORT', 6379),
+            'password': os.getenv('REDIS_PASSWORD'),
+            'graph': os.getenv('REDIS_GRAPH'),
+        }
+        redisgraph = self.config.redisgraph
+
+        try:
+            log.info (f"deleting graph {redisgraph['graph']} in preparation for data loading.")
+            db = self.get_redisgraph()
+            db.delete()
+        except redis.exceptions.ResponseError:
+            log.info("no graph to delete")
+            
+        log.info (f"loading graph: {redisgraph['graph']}")        
+       
+        try:
+            merged_nodes_file = Util.merge_path("nodes.jsonl")
+            merged_edges_file = Util.merge_path("edges.jsonl")
+            log.info(f"Processing : {merged_nodes_file}")
+            self.write_nodes(
+                merged_nodes_file,
+                db
+            )
+            # Add Indexes to Nodes
+            self.add_indexes()
+
+            # constraints Not working rn
+            # self.write_node_constraints(db)
+
+            log.info(f"Processing : {merged_edges_file}")
+            self.write_edges(
+                merged_edges_file,
+                db
+            )
+        except Exception as e:
+            log.error(f"Unexpected {e.__class__.__name__}: {e}")
+            raise
+
+    def write_nodes(self, file_path, graph):
+        counter = 0
+        # pipeline = graph.pipeline()
+        write_to_redis_time = time.time()
+        for node in self.jsonl_iter(file_path=file_path):
+            labels = [f"`{x}`" for x in  node['category']]
+            properties = { f"`{key}`": val for key,val in node.items() if val}
+
+            counter += 1
+
+            graph.add_node(node['id'], labels, properties)
+
+            if counter % 10000 == 0:
+                log.info(f"COUNT {counter}")
+                try:
+                    graph.flush()
+                except Exception as e:
+                    print(node)
+                    log.error(f"COUNT {counter}")
+                    log.error(f"Unexpected {e.__class__.__name__}: {e}")
+                    raise
+                
+                print(f"Redis write time at {counter}: {time.time() - write_to_redis_time}")
+        # When finished fully write all nodes
+        graph.flush()
+        write_to_redis_time = time.time() - write_to_redis_time
+        print(f'Time to write nodes... {write_to_redis_time}')
+
+
+    def write_edges(self, file_path, graph):
+        counter = 0
+        # pipeline = graph.pipeline()
+        write_to_redis_time = time.time()
+        for edge in self.jsonl_iter(file_path=file_path):
+            # properties = " ".join([
+            #     f"SET e.`{key}`={Util.dumps(val)}" for key, val in edge.items()
+            # ])
+            properties = { f"{key}": val for key,val in edge.items() if val}
+            predicate = f"`{edge['predicate']}`"
+            # query = f"""MATCH (c{{ id : {Util.dumps(edge['subject'])}}}), (b{{ id : {Util.dumps(edge['object'])}}}) CREATE (c)-[e:`{edge['predicate']}`]->(b) """ + properties + ";"
+            # pipeline.query(query)
+            graph.add_edge(edge['subject'], predicate, edge['object'], properties)
+            counter += 1
+            if counter % 100 == 0:
+                log.info(f"COUNT {counter}")
+                try:
+                    graph.flush()
+                except Exception as e:
+                    print(edge)
+                    log.error(f"COUNT {counter}")
+                    log.error(f"Unexpected {e.__class__.__name__}: {e}")
+                    raise
+                
+                print(f"Redis write time at {counter}: {time.time() - write_to_redis_time}")
+        # When finished fully write all edges
+        graph.flush()
+        write_to_redis_time = time.time() - write_to_redis_time
+        print(f'Time to write edges... {write_to_redis_time}')
+    
+    def add_indexes(self):
+        redis_connection = self.get_redisgraph()
+        all_labels = redis_connection.query("Match (c) return distinct labels(c)").result_set
+        all_labels = reduce(lambda x, y: x + y, all_labels, [])
+        id_index_queries = [
+            f'CREATE INDEX on  :`{label}`(id)' for label in all_labels
+        ]
+        name_index_queries = "CALL db.labels() YIELD label CALL db.idx.fulltext.createNodeIndex(label, 'name', 'synonyms')"
+
+        for query in id_index_queries:
+            redis_connection.query(query=query)
+        redis_connection.query(query=name_index_queries)
+        log.info(f"Indexes created for {len(all_labels)} labels.")
+
+    def write_node_constraints(self, graph):
+        constraint = f"""CREATE CONSTRAINT node_id ON (n:`biolink:NamedThing`) ASSERT n.id IS UNIQUE"""
+        graph.query(constraint)
+        log.info(f"Created node constraints")
+
+    def get_redisgraph(self):
+        return RedisGraph(
+            host=self.config.redisgraph.host,
+            port=self.config.redisgraph.port,
+            password=self.config.redisgraph.password,
+            graph=self.config.redisgraph.graph,
+        )
+    
+    def jsonl_iter(self, file_path):
+        with open(file_path) as stream:
+            for line in stream:
+                yield json.loads(line)
 
 
 class BiolinkModel:
@@ -1451,6 +1642,7 @@ class Roger:
         self.biolink = BiolinkModel (config.kgx.biolink_model_version)
         self.kgx = KGXModel (self.biolink, config=config)
         self.bulk = BulkLoad (self.biolink, config=config)
+        self.cypher = BulkLoad (self.biolink, config=config)
 
     def __enter__(self):
         """ Implement Python's Context Manager interface. """
@@ -1544,6 +1736,14 @@ class RogerUtil:
         return output
 
     @staticmethod
+    def cypher_load (to_string=False, config=None):
+        output = None
+        with Roger (to_string, config=config) as roger:
+            roger.kgx.cypher_load ()
+            output = roger.log_stream.getvalue () if to_string else None
+        return output
+
+    @staticmethod
     def validate (to_string=False, config=None):
         output = None
         with Roger (to_string, config=config) as roger:
@@ -1568,6 +1768,7 @@ if __name__ == "__main__":
     parser.add_argument('-l', '--load-kgx', help="Load via KGX", action='store_true')
     parser.add_argument('-s', '--create-schema', help="Infer schema", action='store_true')
     parser.add_argument('-m', '--merge-kgx', help="Merge KGX nodes", action='store_true')
+    parser.add_argument('-cl', '--cypher-load', help="Load kgx via cypher", action='store_true')
     parser.add_argument('-b', '--create-bulk', help="Create bulk load", action='store_true')
     parser.add_argument('-i', '--insert', help="Do the bulk insert", action='store_true')
     parser.add_argument('-a', '--validate', help="Validate the insert", action='store_true')
@@ -1593,6 +1794,8 @@ if __name__ == "__main__":
         bulk.create ()
     if args.insert:
         bulk.insert ()
+    if args.cypher_load:
+        kgx.cypher_load ()
     if args.validate:
         bulk.validate ()
 
